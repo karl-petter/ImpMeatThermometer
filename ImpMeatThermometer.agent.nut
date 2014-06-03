@@ -20,20 +20,48 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 /* Turkey Probe Agent Firmware
  * Tom Byrne
  * 12/18/13
+ *
+ * Imp Meat Thermometer version
+ * Karl-Petter Åkesson - yelloworb.com
+ * Modified version with some improvements
+ * - uses Steinhart-Hart equation for resistance -> temperature conversion
+ *   This makes it rather easy to calculate the coefficients if a another
+ *   probe is used by using the Thermistor project code - http://thermistor.sourceforge.net/
+ * - alarm temperature support. The user can set an alarm temperature in the 
+ *   web GUI and the agent will call the ALARM_WEBHOOK_URL with a POST request
+ *   the actual temperature as data in JSON
+ * - Much faster response in the web GUI, temperature is updated once per second
+ *   and the graph every 10th second
+ * - readings are packed together and sent 10 at a time to not overload Xively
+ * June 3rd 2014
+ *
+ * TODOs
+ * - none
  */ 
  
 /* CONSTS AND GLOBALS ========================================================*/ 
+// Sleep timers. Values in seconds. These use a simple heuristic to determine if we should
+// time out due to inactivity and send the device to sleep.
+const START_SLEEP_TIMER = 120; // amount of time sleep timer starts with
+const MAX_SLEEP_TIMER = 1800; // maximum value we let the don't-sleep-due-to-activity-timer grow to
+const MIN_CHANGE = 1; // minimum amount of temp change in measurement interval to add time to the sleepTimer
+const TIMER_DEC_INTERVAL = 10; // call the checkSleepTimer() every 10th second
+lastTemp <- 0;
+sleepTimer <- (START_SLEEP_TIMER+10); // countdown timer; sleep if no activity during this time in seconds. Constantly refilled while active.
+const MAX_AUTOSLEEP_TEMP = 30; // max temp that under which autosleep is active, wont sleep if above this
 
 const THRESHOLD_HYSTERESIS  = 5.0; // degrees below threshold at which the alarm is resetted.
 const READINGS_BUFFER_SIZE  = 10; // number of temperature readings to buffer up before sending to Xively
 temperatureReadings <- [];
-alarmThreshold <- 95;
+
+const ALARM_WEBHOOK_URL = "YOUR_WEBHOOK_URL";
+alarmThreshold <- 55;
 aboveThreshold <- false;
 dateLastReading <- 0;
 
 // Xively credentials to post to feed and retrieve graphs on the UI
-const XIVELY_API_KEY = "VdZOukN1qlzjIeMYIMHhpwppvh8VFSMdHfbRMkNj2YFm8app";
-const XIVELY_FEED_ID = "2045479230";
+const XIVELY_API_KEY = "YOUR KEY HERE";
+const XIVELY_FEED_ID = "YOUR FEED ID HERE";
 Xively <- {};  // this makes a 'namespace'
 
 // low battery warning threshold voltage
@@ -71,34 +99,10 @@ function prepWebpage() {
         <meta name='description' content=''>
         <meta name='author' content=''>
     
-        <title>Electric Imp Connected Meet Thermometer</title>
+        <title>Electric Imp Connected Meat Thermometer</title>
         <link href='data:image/x-icon;base64,AAABAAEAEBAAAAAAAABoBQAAFgAAACgAAAAQAAAAIAAAAAEACAAAAAAAAAEAAAAAAAAAAAAAAAEAAAAAAAAAAAAABSV/AAgQmgAAA2IAWHzMACdRwgAEElAAVoHSACVawgBDcsEARHPEAPv+/wABG80A//7/AO7o6wAXLuoAAzWvADZltgBNfM0AEBluAB064QALB0IAIjmFAD1rvwApdOMAPmrFADdWnABDbr8AVYXWAAECGQD8+fEAV4XWAERvwgD+/PEARnDFAFRqswBIcsIABQYcADI+5AD9/f0ANnjmAAUaaQAJGssAJzhfABAevAAkQV8ALUqdAC5UlwAzIh4AKlamAAEWQwAqIzwAE0OkAEdpugD7+vUAQ3LDAERxyQAuYLsASHbGAC1K5QBTZ8YACDCiAAEc0gBKdcwAFjPpABNRxQAmFjoA7vH2ADZQlQBAa8EAMlOnAApCvQD09/8Ad5DUAERtvgAzWqEAtLzPAPj7+QBZhNUAAAl3ACEtWwBGdMEA//zzAAoaUAD/9/8A/fr/AEpuygApU90A///8AGKK1QAdIJcAOGe2AAMJQgAZduwAIEBwAAwNlQAsT7cAPE6ZAEVuuQATDZ4A8v/9AD1DVQBGccIAJkeOAP/7+gBJeb8AV11sACIZKgANStYAUXi8ABRMygBLessAMHDJAPHv+wA9bL0AAAjGAFSD1ABVg9QAIVrHACdDgwBEc8kA/f34AGGF0QD///4ADAqFAAoILwAFEywACyxbAD9jtQAPIWcAOEWbACBoqgASJHAAE5nrAEFwwQAoPocADCrkAEBYjABDccQAJ1bOAPj+/AAnfvQATW24ABIdOAAcTJ8A/v//AENdmwD///8AS3PKADlfswAYL5EAPUDmADNKkABBZ6cAFDKjALGxzQA+bL8AARVOAAkRSwAMGDwA+f7rAPv79AAKQsoA+fz3ACFkzAAeIRgARXTFACYpXAD//v0AEx2kABguPwAcVr4ARGyuAPH68gBIaqgA9PP4AAgTQABBacAAEitsACE3+gC6ucIARESjAAtFwgAXHuYARnDDAP/1/gAPIT0A/fv+AP7+/gD//v4AG2jiAA46hwAjOloAIZztABkwhAAIVtoADQ6CACE3fgAQV9QAAiV/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJOTvCcnJ0MrGi8tTFiTk5OTqA5QpLCQERecclufjKG9C2V+woBFMQqKijcJlVasHjaLoplKeDqmNzcKG2YiiXGtMscGlAd1ElFiN4EgJCNqYGvDPXpOH3Q/soaYII6rV24wbJpaWRxvGX8DLml2hLWbXiy3KqlJS0Z8YVOWvl0YeSaXQAI+c5I4Y4K/KTSlBFU7FcQPiE8BNV+Fwa7GxVJkoH0zswwQR7E8noOHjzlIk3shFBMdQbYWuGcFRFxNk5OTDa+0nbpCcCh3JQije5OTk5N7e2inqm2NwLlUu5GTAAAAAAAAAAAAAAAAAAAAAP//AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP//AAA=' rel='icon' type='image/x-icon' />
         <!-- Bootstrap core CSS -->
         <link href='https://netdna.bootstrapcdn.com/bootstrap/3.0.2/css/bootstrap.min.css' rel='stylesheet'>
-	    <style type='text/css'>
-    		#xivelyContent {
-	    		background: #fff;
-	    		box-shadow: inset 0px 0px 100px #f0f0f0;
-	    	}
-
-			.graphWrapper {
-				-moz-box-shadow:inset 0px 0px 50px 25px #ffffff;
-				-webkit-box-shadow:inset 0px 0px 50px 25px #ffffff;
-				box-shadow:inset 0px 0px 50px 25px #ffffff;
-				background-image: linear-gradient(bottom, rgb(255,255,255) 30%, rgb(245,245,245) 97%);
-				background-image: -o-linear-gradient(bottom, rgb(255,255,255) 30%, rgb(245,245,245) 97%);
-				background-image: -moz-linear-gradient(bottom, rgb(255,255,255) 30%, rgb(245,245,245) 97%);
-				background-image: -webkit-linear-gradient(bottom, rgb(255,255,255) 30%, rgb(245,245,245) 97%);
-				background-image: -ms-linear-gradient(bottom, rgb(255,255,255) 30%, rgb(245,245,245) 97%);
-				background-image: -webkit-gradient(
-					linear,
-					left bottom,
-					left top,
-					color-stop(0.3, rgb(255,255,255)),
-					color-stop(0.97, rgb(245,245,245))
-				);
-			}
-		</style>
       </head>
     
       <body>
@@ -112,7 +116,7 @@ function prepWebpage() {
                 <span class='icon-bar'></span>
                 <span class='icon-bar'></span>
               </button>
-              <a class='navbar-brand'>Connected Meet Thermometer</a>
+              <a class='navbar-brand'>Electric Imp Meat Thermometer</a>
             </div>
     
             <!-- Collect the nav links, forms, and other content for toggling -->
@@ -128,8 +132,8 @@ function prepWebpage() {
             <div class='col-md-offset-2 col-md-8 well'>
                 <div class='row'>
                   <div class='col-md-12 form-group'>
-                    <h2 style='display: inline'>Probe<span id='currentTemp' style='padding-left: 15px'>0.0&degC</span></h2>
-                    <button type='button' class='btn btn-default' style='vertical-align: top; margin-right: 15px; margin-left: 15px;' onclick='toggleUnits()'><span class='glyphicon glyphicon-globe'></span> &degC / &degF</button>
+                    <h2 style='display: inline'>Probe <span id='currentTemp'>offline</span></h2>
+                    <button type='button' class='btn btn-default' style='vertical-align: top; margin-right: 10px; margin-left: 10px;' onclick='toggleUnits()'>&degC/&degF</button>
                     <h2 style='display: inline'>Alarm:</h2>
                     <form style='display: inline; position: absolute; margin-top: 7px; margin-left: 8px;'><input onchange='setAlarmThreshold()' value='" +alarmThreshold + @"' type='number' id='alarmThreshold' max='100' min='20'></form>
                   </div>
@@ -138,9 +142,6 @@ function prepWebpage() {
                   <div id='graphcontainer'>
                     <img id='tempgraph' style='margin-left: 15px' src=''></img>
                   </div>
-                  <div class='graphWrapper' style='margin-top: 15px; padding: 10px; text-align: center;'>
-			        <div class='graph' style='width: 600px; margin: auto;'></div>
-				  </div>
 				  <div class='slider' style='width: 600px; height: 15px; margin: auto;'></div>
                   <div style='padding-top: 10px' class='col-md-12 form-group'>
                     <button type='button' class='btn btn-default' style='vertical-align: top; margin-left: 15px;' onclick='graph5min()'>5 min</button>
@@ -168,11 +169,8 @@ function prepWebpage() {
       <!-- javascript -->
       <script src='http://ajax.googleapis.com/ajax/libs/jquery/2.0.0/jquery.min.js'></script>
       <script src='http://ajax.googleapis.com/ajax/libs/jqueryui/1.10.3/jquery-ui.min.js'></script>
-      <script src='http://d23cj0cdvyoxg0.cloudfront.net/xivelyjs-1.0.4.min.js'></script>
       <script src='https://netdna.bootstrapcdn.com/bootstrap/3.0.2/js/bootstrap.min.js'></script>
-      <script src='https://dl.dropboxusercontent.com/u/933649/meetprobe/js/d3.min.js' charset='utf-8'></script>
-      <script src='https://dl.dropboxusercontent.com/u/933649/meetprobe/js/rickshaw.min.js'></script>
-      <script src='https://dl.dropboxusercontent.com/u/933649/meetprobe/js/follows.js'></script>
+      <script src='http://d23cj0cdvyoxg0.cloudfront.net/xivelyjs-1.0.4.min.js'></script>
       <script>
         var XIVELY_KEY = '" + XIVELY_API_KEY + @"';
         var XIVELY_FEED_ID = '" + XIVELY_FEED_ID + @"';
@@ -185,11 +183,16 @@ function prepWebpage() {
         var UNITS = 'C';
         var graphDuration = '1hour';
         
-        var alarmThreshold = 55;
+        var alarmThreshold = " +alarmThreshold + @";
         
-        xively.setKey( XIVELY_KEY ); 
+        xively.setKey( XIVELY_KEY );
         
-        var graphRefreshInterval = 60; // graph refresh interval in seconds
+        var temperatureAndTresholdRefreshTimer;
+        var graphRefreshTimer;
+        var inFastRefreshState = true; // dual state for refreshing the web GUI
+        var slowRefreshRateInterval  = 15; // slow refresh rate in seconds
+        var fastRefreshRateInterval  = 5;  // fast refreh rate in seconds
+        var graphRefreshRateInterval = 15; // graph refresh interval in seconds
           
         function graph5min() {
             graphDuration = '5minute';
@@ -218,12 +221,33 @@ function prepWebpage() {
                 function(data) {
                     if('current_value' in data) {
                         if(data.current_value=='offline') {
+                            if(inFastRefreshState) {
+                                clearInterval(temperatureAndTresholdRefreshTimer);
+                                clearInterval(graphRefreshTimer);
+                                temperatureAndTresholdRefreshTimer = setInterval(refreshTempAndAlarm, slowRefreshRateInterval * 1000)
+                                graphRefreshTimer = setInterval(refreshGraph, slowRefreshRateInterval * 1000);
+                            }
+                            // if in slow state, just stay there, do not change anything
+                            
+                            // change the information to offline
                             $('#currentTemp').html(data.current_value);
-                        } else if (UNITS == 'C') {
-                            $('#currentTemp').html(data.current_value+'&deg'+UNITS);
                         } else {
-                            var temp = Math.round(10 * (data.current_value * 1.8 + 32.0)) / 10;
-                            $('#currentTemp').html(temp+'&deg'+UNITS);
+                            // if in the slow state, enter the fast
+                            if(!inFastRefreshState) {
+                                clearInterval(temperatureAndTresholdRefreshTimer);
+                                clearInterval(graphRefreshTimer);
+                                temperatureAndTresholdRefreshTimer = setInterval(refreshTempAndAlarm, fastRefreshRateInterval * 1000)
+                                graphRefreshTimer = setInterval(refreshGraph, graphRefreshRateInterval * 1000);
+                                inFastRefreshState = true;
+                            }
+                            // and if we are in the fast, lets stay there
+                            
+                            if (UNITS == 'C') {
+                                $('#currentTemp').html(data.current_value+'&deg'+UNITS);
+                            } else {
+                                var temp = Math.round(10 * (data.current_value * 1.8 + 32.0)) / 10;
+                                $('#currentTemp').html(temp+'&deg'+UNITS);
+                            }
                         }
                     } else {
                         console.log('Unknown data in temperature query' + data);
@@ -306,8 +330,8 @@ function prepWebpage() {
         // setInterval takes an interval in ms; multiply by 1000.
         refreshTempAndAlarm();
         refreshGraph();
-        setInterval(refreshTempAndAlarm, 5 * 1000)
-        setInterval(refreshGraph, 15 * 1000);
+        temperatureAndTresholdRefreshTimer = setInterval(refreshTempAndAlarm, fastRefreshRateInterval * 1000)
+        graphRefreshTimer = setInterval(refreshGraph, graphRefreshRateInterval * 1000);
         
         // refresh the entire page if the viewport is resized to make sure the chart is the right size
         window.onresize = function(event) {
@@ -321,7 +345,6 @@ function prepWebpage() {
 }
 
 // Xively "library". See https://github.com/electricimp/reference/tree/master/webservices/xively
-
 class Xively.Client {
     ApiKey = null;
     triggers = [];
@@ -428,14 +451,18 @@ class Xively.Channel {
     
     function ToJson() {
         local data = {};
+        local lastReading;
         data.id <- this.id;
         if(typeof this.current_value == "array") {
-            local last_value = this.current_value.pop().value;
-            data.datapoints <- this.current_value;
+            local arr = this.current_value;
+            local tempArray = clone arr;
+            lastReading = tempArray.pop();
+            local last_value = lastReading.value;
+            data.datapoints <- tempArray;
             this.current_value = last_value;
         }
         data.current_value <- this.current_value;
-        local result = http.jsonencode(data); 
+        local result = http.jsonencode(data);
         return result;
     }
 }
@@ -456,6 +483,7 @@ device.on("justwokeup", function(deviceId) {
         server.save(config);
         prepWebpage();
     }
+    sleepTimer = START_SLEEP_TIMER;
 });
 
 device.on("deviceId", function(deviceId) {
@@ -466,15 +494,31 @@ device.on("deviceId", function(deviceId) {
 });
 
 device.on("temp", function(data) {
-    if(temperatureReadings.len() == READINGS_BUFFER_SIZE) {
-        temperatureReadings.clear();
-    }
-    
     local d = date(time(),"l");
     dateLastReading = time();
     // 2013-04-22T00:35:43Z
     local datestring = format("%04d-%02d-%02dT%02d:%02d:%02dZ", d.year, d.month+1, d.day, d.hour, d.min, d.sec);
     
+    local deltaTemp = math.abs(data.temp - lastTemp);
+    lastTemp = data.temp;
+    // only add time to the timer if we have activity, i.e. temperature change
+    if (deltaTemp > MIN_CHANGE) {
+        // TODO: Explain why modify sleeptimer depending on temperature change
+        // why not reset it to the start value each time temperature changes?
+        if (deltaTemp > 30) {
+            sleepTimer += 60;
+        } else {
+            sleepTimer += deltaTemp * 2;
+        }
+    }
+    // don't let the sleep timer exceed the preset max.
+    if (sleepTimer > MAX_SLEEP_TIMER) {
+        sleepTimer = MAX_SLEEP_TIMER
+    };
+    
+    if(temperatureReadings.len() >= READINGS_BUFFER_SIZE) {
+        temperatureReadings.clear();
+    }
     temperatureReadings.push({at = datestring, value = format("%.1f",data.temp)});
     local status = (data.temp>alarmThreshold)?"is above":"is below";
     status += " " + alarmThreshold + " C";
@@ -489,7 +533,7 @@ device.on("temp", function(data) {
     if(data.temp > alarmThreshold && !aboveThreshold) {
         aboveThreshold = true;
         server.log("Temperature above Threshold! Alert!");
-        local request =http.post("https://zapier.com/hooks/catch/cbj4g/", {}, http.jsonencode({temp = format("%.1f",data.temp)}));
+        local request =http.post(ALARM_WEBHOOK_URL, {}, http.jsonencode({temp = format("%.1f",data.temp)}));
         local response = request.sendsync();
     } 
     if(data.temp < (alarmThreshold - THRESHOLD_HYSTERESIS) && aboveThreshold) {
@@ -515,17 +559,22 @@ device.on("temp", function(data) {
 /* HTTP REQUEST HANDLER =======================================================*/ 
 
 http.onrequest(function(request, res) {
+    server.log("New request");
     // we need to set headers and respond to empty requests as they are usually preflight checks
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Headers","Origin, X-Requested-With, Content-Type, Accept");
     res.header("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
 
+    // implementation of our simple REST API to set alarm threshold and read temperature
     if (request.path.find("/api") != null) {
+        // alarm API
         if (request.path.find("/alarm") != null) {
+            // read the alarm threshold
             if(request.method == "GET") {
                 local data = {};
                 data.threshold <- alarmThreshold;
                 res.send(200,http.jsonencode(data));
+            // set the alarm threshold
             } else if(request.method == "PUT") {
                 try {
                     // Check if the the threshold was passed
@@ -544,7 +593,10 @@ http.onrequest(function(request, res) {
                     response.send(500, "Invalid JSON string");
                 }
             }
+            // temperature API
         } else if (request.path.find("/temperature") != null) {
+            // read the current temperature value, return 'offline' if reading is
+            // older than 5 seconds
             if(request.method == "GET") {
                 local data = {};
                 if((dateLastReading == 0) || (time()-dateLastReading > 5)) {
@@ -565,13 +617,27 @@ http.onrequest(function(request, res) {
     }
 });
 
-function requestHandler(request, response) {
-
+function checkSleepTimer() {
+    // recursively call checkSleepTimer in TIMER_DEC_INTERVAL
+    imp.wakeup(TIMER_DEC_INTERVAL, checkSleepTimer); 
+    sleepTimer -= TIMER_DEC_INTERVAL;
+    if (sleepTimer < 0) {
+        sleepTimer = 0
+    };
+    
+    server.log("Sleep timer = " + sleepTimer);
+    // if timed out and device is connected, tell it to sleep
+    if ((sleepTimer == 0) && device.isconnected()) {
+        // only send sleep if lastTemp is below MAX_AUTOSLEEP_TEMP
+        if (lastTemp < MAX_AUTOSLEEP_TEMP) {
+            // TODO: if app is open, don't sleep
+            device.send("sleep",0);
+        }
+    }
 }
-
 /* RUNTIME BEGINS HERE =======================================================*/
 
-server.log("Grill Probe Agent Started.");
+server.log("Imp Meat Thermometer Agent Started.");
 
 // instantiate our Xively client
 xivelyClient <- Xively.Client(XIVELY_API_KEY);
@@ -581,3 +647,6 @@ xivelyClient <- Xively.Client(XIVELY_API_KEY);
 imp.wakeup(1, function() {
     if (config.myDeviceId == null) { device.send("needDeviceId",0); } else { prepWebpage(); };
 });
+
+// start running the auto-sleep watchdog timer
+checkSleepTimer();

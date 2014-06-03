@@ -20,6 +20,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 /* Turkey Probe Device Firmware
  * Tom Byrne
  * 12/7/13
+ *
+ * Imp Meat Thermometer version
+ * Karl-Petter Åkesson - yelloworb.com
+ * Modified version with some improvements, see agent for details.
+ * June 3rd 2014
  */
  
 /* CONSTS and GLOBAL VARS ====================================================*/
@@ -30,7 +35,10 @@ const MAXSLEEP          = 86396; // max amount of time to sleep (1 day)
 const R2                = 47000; // the resistance of the resistor in the voltage divider
 const b_therm = 3977.0;
 const t0_therm = 298.15;
- 
+
+i <- 0; // index of the averagebuffer rawval
+rawval <- []; // buffer to save raw values and used to calculate an average over time
+
 /* GLOBAL CLASS AND FUNCTION DEFINITIONS =====================================*/
 
 // Reads the ADC input and calculates the Thermistor resistance based on current
@@ -94,14 +102,15 @@ function getTemp() {
 
     local temp_K = calculateTemperature(3, average);
     local temp_C = temp_K - 273.15;
-  
+    
     agent.send("temp",{"temp":temp_C,"vbat":hardware.voltage()});
 }
 
 function goToSleep() {
-    wake.configure(DIGITAL_IN_WAKEUP);
+    server.log("Going into sleep ...");
+    wake.configure(DIGITAL_IN_WAKEUP); // set the imp to wake on input on pin 1
     // go to sleepfor max sleep time (1 day minus 5 seconds)
-    // server.sleepfor(MAXSLEEP);
+    server.sleepfor(MAXSLEEP);
 }
 
 function btnPressed() {
@@ -128,34 +137,35 @@ agent.on("needDeviceId", function(val) {
 
 // configure hardware
 wake            <- hardware.pin1;
+
 vtherm_en_l     <- hardware.pin8;
 vtherm_en_l.configure(DIGITAL_OUT);
-vtherm_en_l.write(0);
+
 vtherm          <- hardware.pin9;
 vtherm.configure(ANALOG_IN);
 
-// TEMPORARILY REMOVED SINCE NO WAKE UP BUTTON ON CURRENT HW
-
 // check wakereason and make this a shallow wake if necessary
-//if ((hardware.wakereason() == WAKEREASON_PIN1) || (hardware.wakereason() == WAKEREASON_TIMER)) {
-//    local start = hardware.millis();
-//    while ((hardware.millis() - start) < LONGPRESS_TIME*1000) {
-//        if (!hardware.pin1.read()) {goToSleep();}
-//    }
+if ((hardware.wakereason() == WAKEREASON_PIN1) || (hardware.wakereason() == WAKEREASON_TIMER)) {
+    local start = hardware.millis();
+    while ((hardware.millis() - start) < LONGPRESS_TIME*1000) {
+        if (!hardware.pin1.read()) {
+            goToSleep();
+        }
+    }
     
     // if we made it here, somebody's just long-pressed the power button to wake the imp
     // go ahead and boot right up.
-//}
+}
 
 // not a shallow wake; fire up the radio and let's cook a turkey
-// imp.setpowersave(true); // save juice, as this application is not latency-critical
+imp.setpowersave(true); // save juice, as this application is not latency-critical
 
-// wake.configure(DIGITAL_IN, btnPressed);
+wake.configure(DIGITAL_IN, btnPressed);
+
+vtherm_en_l.write(0);
 imp.sleep(0.02); // sleep 0.02 s, ie 20 ms to allow resistor to stabalize before sample
-i <- null;
-rawval <- [];
+// fill the rawval average buffer with a first reading
 rawval = array(AVERAGE_SIZE, getTermistorResistance());
-i = 0;
 vtherm_en_l.write(1);
 
 agent.send("justwokeup",hardware.getdeviceid());
