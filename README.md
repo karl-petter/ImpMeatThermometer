@@ -19,7 +19,7 @@ Getting started
 ===============
 
 1. Build the hardware by following the instructions on [Instructables](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/). [Step 1](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/) and [step 2](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/step2/Wire-it-Up/).
-2. One you reach [step 3](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/step3/Program-Your-Thermometer/), use this source code instead of the one linked to.
+2. Once you reach [step 3](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/step3/Program-Your-Thermometer/), use the source code here instead of the one linked to.
 3. Follow [step 4](http://www.instructables.com/id/Imp-Chef-Internet-Connected-BBQ-Thermometer/step4/Configure-a-Xively-Feed/) and configure Xively. And do not forget to put in the feed ID and the API key on [line 63](ImpMeatThermometer.agent.nut#L63) and [line 64](ImpMeatThermometer.agent.nut#L64) in the code.
 4. Replace the ALARM_WEBHOOK_URL on [line 57](ImpMeatThermometer.agent.nut#L57) in the Agent code with a URL you want to be called once the alarm should go off. See the [alarm support](#anchors-alarm-support) section how I used Zapier and Pushover to get a push notfication in my iPhone.
 
